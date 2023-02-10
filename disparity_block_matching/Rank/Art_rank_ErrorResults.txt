@@ -1,0 +1,14 @@
+For rank size of:3 x 3 and Search size of: 3 x 3
+ Error is:Before MF  threshold >=1: 74.921522
+ threshold >=2:74.583343
+ threshold >=5:73.517662
+
+For rank size of:3 x 3 and Search size of: 3x3
+ Error is:After MF  threshold >=1: 98.859168
+ and threshold >=2:98.088088
+ and threshold >=5:95.694741
+
+
+
+
+Used Disparity Range = 224

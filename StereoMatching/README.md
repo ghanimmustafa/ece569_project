@@ -1,3 +1,5 @@
+THIS README CAN BE FOLLOWED TO REPRODUCE
+
 # StereoMatching
 
 

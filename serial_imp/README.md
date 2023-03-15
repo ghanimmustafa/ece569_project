@@ -2,13 +2,13 @@
 Constructing disparity image from a stereo pair using stereo block matching. The code uses the sum of square differences (SSD) as a metric to compare windows.
 
 # dependencies
-The program was compiled with OpenCV-2.4.13 and g++-5
+The program was compiled with OpenCV-2.4.13 and g++-5 (**changed to OpenCV4**)
 
 # usage
 The repository contains a directory of stereo images to get started. These are a subset from the Middlebury dataset.
 To run the program first compile the file:
 
-```g++ one.cpp -o one `pkg-config --cflags --libs opencv```
+g++ sbm.cpp -o sbm `pkg-config --cflags --libs opencv4`
 
 To run the file:
 

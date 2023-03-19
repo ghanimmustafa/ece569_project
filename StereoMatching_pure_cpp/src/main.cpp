@@ -5,7 +5,11 @@ unsigned int DISP;
 unsigned int iW;
 
 using namespace std;
-using namespace cv;
+
+#define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image.h"
+#include "stb_image_write.h"
 
 int
 main(int argc,
@@ -13,8 +17,7 @@ main(int argc,
 {
 	unsigned int WINDOW_SIZE;
 
-	Mat img1,img2,row,disp;
-	int (*Method)(Mat,Mat,Point2i,Point2i,int);
+	int (*Method)(uint8_t*, uint8_t*, int, int, int, int, int, int, int);
 
 	if(argc < 6){
 		cout <<"Usage : "<<argv[0]<<"  <image-file-name-1> <image-file-name-2> <Method> <WINDOW_SIZE> <DISP>"<<endl;
@@ -23,9 +26,6 @@ main(int argc,
 
 	if(string(argv[3]) == "SAD")
 		Method = &SAD;
-
-	else if(string(argv[3]) == "LBP")
-		Method = &LBP;
 
 	else if(string(argv[3]) == "SSD")
 		Method = &SSD;
@@ -38,44 +38,43 @@ main(int argc,
 	WINDOW_SIZE = atoi(argv[4]);
 	DISP 		= atoi(argv[5]);
 
-	img1 = imread(argv[2],IMREAD_GRAYSCALE);
-	img2 = imread(argv[1],IMREAD_GRAYSCALE);
+    int height_right, width_right, depth_right;
+    char right_image_path[100] = "../images/Art/view5.png";
+    uint8_t* right_image = stbi_load(right_image_path, &width_right, &height_right, &depth_right, 1);
+    if (right_image == NULL){
+	std::cout << "Failed to open image " << right_image_path << std::endl;
+        return -1;
+    }
+    int size_right = height_right * width_right;
 
-	if(img1.empty() || img2.empty() )
-		return -1;
+	int height_left, width_left, depth_left;
+    char left_image_path[100] = "../images/Art/view1.png";
+    uint8_t* left_image = stbi_load(left_image_path, &width_left, &height_left, &depth_left, 1);
+    if (left_image == NULL){
+	std::cout << "Failed to open image " << left_image_path << std::endl;
+        return -1;
+    }
+    int size_left = height_left * width_left;
 
-	disp = Mat(img1.rows,img1.cols,CV_8UC1,Scalar::all(255));
+	uint8_t* disp = (uint8_t *) malloc (sizeof (uint8_t) * (size_right));
+	for(int i = 0; i < size_right; i++)disp[i] = 255;
 
-	for(int l = WINDOW_SIZE/2; l < img1.rows - WINDOW_SIZE/2; l++){
-		row = Mat(DISP,img1.cols,CV_32S,Scalar::all(255));
-		for(int i = WINDOW_SIZE/2 ; i < img1.cols - WINDOW_SIZE/2; i++){
+	for(int l = WINDOW_SIZE/2; l < height_right - WINDOW_SIZE/2; l++){
+		int* row = (int *) malloc (sizeof (int) * (DISP * width_right));
+		for(int iter = 0; iter < DISP * width_right; iter++){
+			row[iter] = 255;
+		}
+		for(int i = WINDOW_SIZE/2 ; i < width_right - WINDOW_SIZE/2; i++){
 			for(int j = 0; j < DISP ; j++){
-				if((i+j) >= (img1.cols - WINDOW_SIZE /2) )
+				if((i+j) >= (width_right - WINDOW_SIZE /2) )
 					break;
-				row.at<int>(j,i) = Method(img1,img2,Point2i(i,l),Point2i(i+j,l), WINDOW_SIZE/*Ideal(img1,Point2i(i,l))*/);
+				row[j * width_right + i] = Method(right_image,left_image, i, l, i+j, l, WINDOW_SIZE, height_right, width_right);
 			}
 		}
-		for(int i = WINDOW_SIZE/2; i < img1.cols - WINDOW_SIZE/2 ; i++){
-			disp.at<uchar>(l,i) =  getMin(row,i);
-		}
+		for(int i = WINDOW_SIZE/2; i < width_right - WINDOW_SIZE/2 ; i++){
+			disp[l * width_right + i] =  getMin(row, i, height_right, width_right);
+		}	
 	}
-
-	for(int i = 0; i < 200; i++)printf("%d ", disp.at<uchar>(120, i));
-	printf("\n\n\n");
-
-	medianBlur(disp,disp,3);
-
-	for(int i = 0; i < 200; i++)printf("%d ", disp.at<uchar>(120, i));
-	printf("\n\n\n");
-
-	normalize(disp,disp,0,255,NORM_MINMAX,CV_8UC1);
-
-	for(int i = 0; i < 200; i++)printf("%d ", disp.at<uchar>(120, i));
-	printf("\n\n\n");
-
-	//Mat dst = G2C(disp,4);
-	//Mat gray;
-	//cvtColor(dst, gray, COLOR_BGR2GRAY);
-	Display(&disp,argv[3]);
+	stbi_write_png("grayscale.png", width_right, height_right, 1, disp, width_right);
 	return 0;
 }

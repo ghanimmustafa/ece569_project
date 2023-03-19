@@ -77,7 +77,7 @@ int main(int argc, char** argv)
     int right_width, right_height, right_channels;
     unsigned char* right_data = stbi_load("view1.png", &right_width, &right_height, &right_channels, 3);
     if (!right_data) {
-        cerr << "Error: could not read input image 'view1.png'" << endl;
+        cerr << "Error: could not read the right image 'view1.png'" << endl;
         return 1;
     }
 

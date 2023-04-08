@@ -10,12 +10,56 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include<cuda.h>
+#include <cuda_runtime.h>
 // loading cuda: module load cuda11/11.0
 // Compile as:
 // nvcc -o lbm lbm.cu -std=c++11
 
 
 using namespace std;
+// define gpu and cpu kernels 
+
+__global__ void compute_disparity(int width, int height, int block_size, int search_range, const unsigned char* left_gray, const unsigned char* right_gray, unsigned char* disparity) {
+
+
+
+    int min_sad = INT_MAX;
+    int best_offset = 0;
+    int max_disparity = width - block_size;
+
+    // Compute the valid range of disparities for the current pixel
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+		if(x < width && y < height){
+			int min_disp_range = max(0, x - search_range);
+    	int max_disp_range = min(width - 1, x + search_range);
+		  // Iterate over all possible disparities
+		  for (int offset = min_disp_range - x; offset <= max_disp_range - x; offset++) {
+		      // Compute SAD between left and right block
+		      int sad = 0;
+		      for (int i = 0; i < block_size; i++) {
+		          for (int j = 0; j < block_size; j++) {
+
+				            int px1 = left_gray[(y + i) * width + (x + j)];
+				            int px2 = right_gray[(y + i) * width + (x + offset + j)];
+				            sad += abs(px1 - px2);
+								
+		          }
+		      }
+
+		      // Update best disparity if current SAD is lower
+		      if (sad < min_sad) {
+		          min_sad = sad;
+		          best_offset = offset;
+		      }
+		  }
+
+		  // Store best disparity
+		  disparity[(y * width) + x] = abs(best_offset) * (255.0 / max_disparity);
+		}
+}
 
 
 
@@ -108,70 +152,70 @@ int main(int argc, char** argv)
 				return 1;
 		}
 
-    // Compute disparity map
-    int disp_width = left_width;
-    int disp_height = left_height;
-    unsigned char* disp_data = new unsigned char[disp_width * disp_height];
+		// Allocate memory for output disparity map
+		int disp_width = left_width;
+		int disp_height = left_height;
+		unsigned char* disparity = new unsigned char[disp_width * disp_height];
 
-    // Compute maximum disparity
-    int max_disparity = left_width - block_size;
+		// Declare and allocate device memory
+		unsigned char *d_left_gray, *d_right_gray, *d_disparity;
+		cudaMalloc((void **)&d_left_gray, left_width * left_height * sizeof(unsigned char));
+		cudaMalloc((void **)&d_right_gray, right_width * right_height * sizeof(unsigned char));
+		cudaMalloc((void **)&d_disparity, disp_width * disp_height * sizeof(unsigned char));
 
-		// Iterate over all pixels in left image
-		for (int y = 0; y < left_height; y++) {
-				for (int x = 0; x < left_width; x++) {
-				    int min_sad = INT_MAX;
-				    int best_offset = 0;
+		// Copy input data to device
+		cudaMemcpy(d_left_gray, left_gray_data, left_width * left_height * sizeof(unsigned char), cudaMemcpyHostToDevice);
+		cudaMemcpy(d_right_gray, right_gray_data, right_width * right_height * sizeof(unsigned char), cudaMemcpyHostToDevice);
 
-				    // Compute the valid range of disparities for the current pixel
-				    int min_disp_range = max(0, x - search_range);
-				    int max_disp_range = min(right_width - 1, x + search_range);
-
-				    // Iterate over all possible disparities
-				    for (int offset = min_disp_range - x; offset <= max_disp_range - x; offset++) {
-				        // Compute SAD between left and right block
-				        int sad = 0;
-				        for (int i = 0; i < block_size; i++) {
-				            for (int j = 0; j < block_size; j++) {
-				                int px1 = left_gray_data[(y + i) * left_width + (x + j)];
-				                int px2 = right_gray_data[(y + i) * right_width + (x + offset + j)];
-				                sad += abs(px1 - px2);
-				            }
-				        }
-
-				        // Update best disparity if current SAD is lower
-				        if (sad < min_sad) {
-				            min_sad = sad;
-				            best_offset = offset;
-				        }
-				    }
-
-				    // Store best disparity
-				    disp_data[(y * disp_width) + x] = abs(best_offset) * (255.0 / max_disparity);
-				}
-		}
+		// Set up kernel grid and block size
+		int block_dim = 32;
+		dim3 block(block_dim, block_dim, 1);
+		dim3 grid(ceil(disp_width + block_dim - 1) / block_dim, ceil(disp_height + block_dim - 1) / block_dim, 1);
 
 
-	// Normalize output image for visualization
-	normalize_image(disp_data, disp_width, disp_height);
+		// Start timing the kernel
+		cudaEvent_t start, stop;
+		cudaEventCreate(&start);
+		cudaEventCreate(&stop);
+		cudaEventRecord(start);
+
+		// Launch kernel
+		compute_disparity<<<grid, block>>>(disp_width, disp_height, block_size, search_range, d_left_gray, d_right_gray, d_disparity);
+
+		// Stop timing the kernel
+		cudaEventRecord(stop);
+		cudaEventSynchronize(stop);
+		float milliseconds = 0;
+
+		// Copy output data from device
+		cudaMemcpy(disparity, d_disparity, disp_width * disp_height * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+		cudaEventElapsedTime(&milliseconds, start, stop);
+		cout << "Disparity estimation kernel execution time: " << milliseconds << "ms" << endl;
+
+		// Normalize output image for visualization
+		normalize_image(disparity, disp_width, disp_height);
 
 
 
-	auto end_time = std::chrono::system_clock::now();
-	auto program_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
-	cout << "Execution time: " << program_time << "ms" << endl;
-  output_path = output_dir + "/disparity.png"; 	
-	// Write output disparity map to file
-	stbi_write_png(output_path.c_str(), disp_width, disp_height, 1, disp_data, disp_width);
+		auto end_time = std::chrono::system_clock::now();
+		auto program_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+		cout << "Total execution time: " << program_time << "ms" << endl;
+		output_path = output_dir + "/disparity_gpu.png"; 	
+		// Write output disparity map to file
+		stbi_write_png(output_path.c_str(), disp_width, disp_height, 1, disparity, disp_width);
 
-	// Free memory
-	delete[] left_data;
-	delete[] right_data;
-	delete[] left_gray_data;
-	delete[] right_gray_data;
-	delete[] disp_data;
+		// Free device and host memory
+		cudaFree(d_left_gray);
+		cudaFree(d_right_gray);
+		cudaFree(d_disparity);
+		delete[] left_data;
+		delete[] right_data;
+		delete[] left_gray_data;
+		delete[] right_gray_data;
+		delete[] disparity;
 	
 
-	return 0;    
+		return 0;    
 	
 }
 		  

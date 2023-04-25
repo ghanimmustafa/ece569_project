@@ -6,12 +6,11 @@
 #include <chrono>
 #include <vector>
 #include <algorithm>
-#include <filesystem>
 #include <string>
+#include <filesystem>
 
 // Compile as:
-// g++ lbm.cpp -o lbm `pkg-config --cflags --libs opencv4`
-
+// g++ lbm_serial.cpp -o lbm_serial
 
 using namespace std;
 namespace fs = std::filesystem;
@@ -76,16 +75,14 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // Convert input images to grayscale
- 		auto start_time = std::chrono::system_clock::now();   
+  
     unsigned char* left_gray_data = new unsigned char[left_width * left_height];
     rgb2gray(left_data, left_width, left_height, left_gray_data);
 
     unsigned char* right_gray_data = new unsigned char[right_width * right_height];
     rgb2gray(right_data, right_width, right_height, right_gray_data);
     
- 		fs::path output_dir = std::filesystem::path(image_dir) / "output_images";
- 		fs::create_directory(output_dir);
+ 		fs::path output_dir = std::filesystem::path(image_dir);
   	string output_path = (output_dir / "left_gray.png").string(); 
 		// Write grayscale images to disk
 		if (!stbi_write_png(output_path.c_str(), left_width, left_height, 1, left_gray_data, left_width)) {
@@ -99,18 +96,19 @@ int main(int argc, char** argv)
 				cerr << "Error: could not write output image 'right_gray.png'" << endl;
 				return 1;
 		}
-
+    // Convert input images to grayscale
+ 		auto start_time = std::chrono::system_clock::now(); 
     // Compute disparity map
     int disp_width = left_width;
     int disp_height = left_height;
     unsigned char* disp_data = new unsigned char[disp_width * disp_height];
 
-    // Compute maximum disparity
-    int max_disparity = left_width - block_size;
+
+
 
 		// Iterate over all pixels in left image
-		for (int y = 0; y < left_height; y++) {
-				for (int x = 0; x < left_width; x++) {
+		for (int y = block_size/2; y < left_height - block_size/2; y++) {
+				for (int x = block_size/2; x < left_width - block_size/2; x++) {
 				    int min_sad = INT_MAX;
 				    int best_offset = 0;
 
@@ -122,8 +120,8 @@ int main(int argc, char** argv)
 				    for (int offset = min_disp_range - x; offset <= max_disp_range - x; offset++) {
 				        // Compute SAD between left and right block
 				        int sad = 0;
-				        for (int i = 0; i < block_size; i++) {
-				            for (int j = 0; j < block_size; j++) {
+				        for (int i = -block_size/2; i <= block_size/2; i++) {
+				            for (int j = -block_size/2; j <= block_size/2; j++) {
 				                int px1 = left_gray_data[(y + i) * left_width + (x + j)];
 				                int px2 = right_gray_data[(y + i) * right_width + (x + offset + j)];
 				                sad += abs(px1 - px2);
@@ -138,20 +136,20 @@ int main(int argc, char** argv)
 				    }
 
 				    // Store best disparity
-				    disp_data[(y * disp_width) + x] = abs(best_offset) * (255.0 / max_disparity);
+				    disp_data[(y * disp_width) + x] = abs(best_offset) ;
 				}
 		}
 
-
+	auto end_time = std::chrono::system_clock::now();
+	auto program_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+	cout << "Execution time: " << program_time << "ms" << endl;
 	// Normalize output image for visualization
 	normalize_image(disp_data, disp_width, disp_height);
 
 
 
-	auto end_time = std::chrono::system_clock::now();
-	auto program_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
-	cout << "Execution time: " << program_time << "ms" << endl;
-  output_path = (output_dir / "disparity.png").string(); 	
+
+  output_path = (output_dir / "cpu_disparity.png").string(); 	
 	// Write output disparity map to file
 	stbi_write_png(output_path.c_str(), disp_width, disp_height, 1, disp_data, disp_width);
 

@@ -4,138 +4,102 @@
 #include "stb_image_write.h"
 #include <cuda_runtime.h>
  
-//@@ INSERT DEVICE CODE HERE 
-#define ch 3
   //3D thread block organization for the image
-__global__ void rgb_to_gry_img(unsigned char* rgbI, int width, int height, int depth, unsigned char* gryI){
- 
+__global__ void rgb_to_gry_img(unsigned char *r, unsigned char *g, unsigned char *b, int width, int height, int depth, unsigned char *gry){
+  
    int w=blockIdx.x*blockDim.x+threadIdx.x;    
    int h=blockIdx.y*blockDim.y+threadIdx.y;
    int d=blockIdx.z*blockDim.z+threadIdx.z;
 
      if(w <width && h<height && d<depth){    //boundary check
-        int index= d*height+h*width+w;   //indexing in 1D for the 3D input array
+        int index= d*width*height+h*width+w;   //indexing in 1D for the 3D input array
    
-        //int rgb_index= index*ch;
+       unsigned char red=r[index];           //getting the pixel for red
+       unsigned char green=g[index];      //getting the pixel for green
+       unsigned char blue=b[index];  //getting the pixel for blue
    
-       unsigned char red=rgbI[rgb_index];     //getting the pixel for red
-       unsigned char green=rgbI[rgb_index+1]; //getting the pixel for green
-       unsigned char blue=rgbI[rgb_index+2];  //getting the pixel for blue
-   
-       gryI[index]= 0.21*red + 0.71*green + 0.07*blue;     
+       gry[index]= 0.21*red + 0.71*green + 0.07*blue;     
    }
 }
-  //2D thread organization
-/*__global__ void rgb_to_gry_img_2D(unsigned char* rgbI, int width, int height, unsigned char* gryI){
- 
-   int w=blockIdx.x*blockDim.x+threadIdx.x;    
-   int h=blockIdx.y*blockDim.y+threadIdx.y;
-
-     if(w <width && h<height){    //boundary check
-        int index= h*width+w; 
-   
-        int rgb_index= index*ch;
-   
-       unsigned char red=rgbI[rgb_index];   //getting the pixel for red
-       unsigned char green=rgbI[rgb_index+1]; //getting the pixel for green
-       unsigned char blue=rgbI[rgb_index+2];  //getting the pixel for blue
-   
-       gryI[index]= 0.21*red + 0.71*green + 0.07*blue;     
-   }
-}*/
 
 int main(int argc, char *argv[]) {
     //int element;
     int imgheight;
     int imgwidth;
     int imgdepth;
+
+    const char *right_image_path = "view1.png";
+    const char *right_output_image = "rightoutput_3D.png";
+    unsigned char *h_image = stbi_load(right_image_path, &imgwidth, &imgheight, &imgdepth, 3);
+    //split image into separate channels 
     
-    const char *right_image_path = "view2.jpg";
-    const char *right_output_image= "rightoutput.png";
-    unsigned char *h_right_input_image = stbi_load(right_image_path, &imgwidth, &imgheight, &imgdepth, 3);
-    unsigned char *h_right_output_image;
-    unsigned char *d_right_input_image;
-    unsigned char *d_right_output_image; 
-    //const char *left_image_path = "view5.png";
-    //const char *left_output_image= "leftoutput.png"; 
-    //unsigned char *h_left_input_image = stbi_load(left_image_path, &imgwidth, &imgheight, &imgdepth, 3);
-    //unsigned char *h_left_output_image;
-    //unsigned char *d_left_input_image;
-    //unsigned char *d_left_output_image; 
+    unsigned char *h_r=(unsigned char*)malloc(imgwidth * imgheight * imgdepth * sizeof(unsigned char));
+    unsigned char *h_g=(unsigned char*)malloc(imgwidth * imgheight * imgdepth * sizeof(unsigned char));
+    unsigned char *h_b=(unsigned char*)malloc(imgwidth * imgheight * imgdepth * sizeof(unsigned char));
+    unsigned char *h_gray=(unsigned char*)malloc(imgwidth * imgheight * imgdepth* sizeof(unsigned char));
+
+    for(int i=0;i<imgdepth;i++){
+        for(int j=0; j<imgheight;j++){
+           for(int k=0;k<imgwidth;k++) {
+               h_r[i*imgdepth*imgheight+j*imgwidth+k] = h_image[i*imgdepth*imgheight+j*imgwidth+k];
+               h_g[i*imgdepth*imgheight+j*imgwidth+k]= h_image[i*imgdepth*imgheight+j*imgwidth+k+1];
+               h_b[i*imgdepth*imgheight+j*imgwidth+k]= h_image[i*imgdepth*imgheight+j*imgwidth+k+2];
+          }
+        }
+      }
+    unsigned char *d_r;
+    unsigned char *d_g;
+    unsigned char *d_b;
+    unsigned char *d_gray;
+    
     float execution_time;
     cudaEvent_t start_time, stop_time;
     cudaEventCreate(&start_time);
     cudaEventCreate(&stop_time);   
 
-    int right_image_size = imgwidth * imgheight* imgdepth * sizeof(unsigned char);
-    //int left_image_size = imgwidth * imgheight* imgdepth * sizeof(unsigned char);
-    h_right_output_image = (unsigned char*) malloc(right_image_size);
-    //h_left_output_image  = (unsigned char*) malloc(left_image_size);
-    
     //allocationg memory on the GPU for the right image
-    cudaMalloc((void **)&d_right_input_image,imgwidth * imgheight * imgdepth * sizeof(unsigned char));
-    cudaMalloc((void **)&d_right_output_image, imgwidth * imgheight * sizeof(unsigned char));
-     
-    //allocationg memory on the GPU for the left image
-    //cudaMalloc((void **)&d_left_input_image,imgwidth * imgheight * imgdepth * sizeof(unsigned char));
-    //cudaMalloc((void **)&d_left_output_image, imgwidth * imgheight * sizeof(unsigned char));
-
+    cudaMalloc((void **)&d_r,imgwidth * imgheight * imgdepth * sizeof(unsigned char));
+    cudaMalloc((void **)&d_g,imgwidth * imgheight * imgdepth * sizeof(unsigned char));
+    cudaMalloc((void **)&d_b,imgwidth * imgheight * imgdepth * sizeof(unsigned char));
+    cudaMalloc((void **)&d_gray, imgwidth * imgheight * sizeof(unsigned char));
+    
     //copying image data from Host to device for the right image
-    cudaMemcpy(d_right_input_image, h_right_input_image, right_image_size, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_r, h_r, imgwidth*imgheight*imgdepth*sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_g, h_g, imgwidth*imgheight*imgdepth*sizeof(unsigned char), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_b, h_b, imgwidth*imgheight*imgdepth*sizeof(unsigned char), cudaMemcpyHostToDevice);
     
-    //copying image data from Host to device for the left image
-    //cudaMemcpy(d_left_input_image, h_left_input_image, left_image_size, cudaMemcpyHostToDevice);
-    
-    const dim3 blocksize(32,8,4); //declaring the number of threads
-    const dim3 gridsize((imgwidth-1)/32+1,(imgheight-1)/8+1,(imgdepth-1)/4+1); //declaring the number of blocks
+    const dim3 blocksize(32,32,1); //declaring the number of threads
+    const dim3 gridsize((imgwidth-1)/32+1,(imgheight-1)/32+1,(imgdepth-1)/1+1); //declaring the number of blocks
     
     cudaEventRecord(start_time, 0);
     //calling the kernel
-    for (int j=0; j<100 ; j++){
-    rgb_to_gry_img<<<gridsize,blocksize>>>(d_right_input_image, imgwidth, imgheight, imgdepth, d_right_output_image);
+    for (int j=0; j<10 ; j++){
+    rgb_to_gry_img<<<gridsize,blocksize>>>(d_r, d_g, d_b, imgwidth, imgheight, imgdepth, d_gray);
     }
     cudaDeviceSynchronize();
     cudaEventRecord(stop_time, 0);
     cudaEventSynchronize(stop_time);
     cudaEventElapsedTime(&execution_time, start_time, stop_time);
+    execution_time /=10.0f;
     printf("Total execution time (ms) for 3D Color To Grayscale conversion %f\n",execution_time);
-    execution_time /=100.0f;
+  
+    cudaMemcpy(h_gray, d_gray, imgwidth * imgheight, cudaMemcpyDeviceToHost);
 
-    /*cudaEventRecord(start_time, 0);
-    //calling the kernel
-    for (int j=0; j<100 ; j++){
-    rgb_to_gry_img<<<gridsize,blocksize>>>(d_left_input_image, imgwidth, imgheight, imgdepth, d_left_output_image);
-    }
-    cudaDeviceSynchronize();
-    cudaEventRecord(stop_time, 0);
-    cudaEventSynchronize(stop_time);
-    cudaEventElapsedTime(&execution_time, start_time, stop_time);
-    printf("Total execution time (ms) %f\n",execution_time);
-    execution_time /=100.0f;*/
-
-    //coping output data from Device to Host for the right image
-    cudaMemcpy(h_right_output_image, d_right_output_image, imgwidth * imgheight, cudaMemcpyDeviceToHost);
-
-     //saving the output right image
-    stbi_write_png(right_output_image, imgwidth, imgheight, 1, h_right_output_image, imgwidth);
-    
-    //coping output data from Device to Host for the left image
-    //cudaMemcpy(h_left_output_image, d_left_output_image, imgwidth * imgheight, cudaMemcpyDeviceToHost);
-    
-    //saving the output left image
-    //stbi_write_png(left_output_image, imgwidth, imgheight, 1, h_left_output_image, imgwidth);
+    //saving the output right image
+    stbi_write_png(right_output_image, imgwidth, imgheight, 1, h_gray, imgwidth);
     
     //freeing the device memory
-    cudaFree(d_right_input_image);
-    cudaFree(d_right_output_image);
-    //cudaFree(d_left_input_image);
-    //cudaFree(d_left_output_image);
+    cudaFree(d_r);
+    cudaFree(d_g);
+    cudaFree(d_b);
+    cudaFree(d_gray);
     
     //freeing the host memory
-    free(h_right_output_image);
-    stbi_image_free(h_right_input_image);
-    //free(h_left_output_image);
-    //stbi_image_free(h_left_input_image);
+    free(h_gray);
+    free(h_r);
+    free(h_g);
+    free(h_b);
+    stbi_image_free(h_image);
 
   return 0;
 }

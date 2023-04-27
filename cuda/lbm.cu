@@ -23,8 +23,8 @@
 
 using namespace std;
 // define gpu and cpu kernels 
-
-__global__ void compute_disparity(int width, int height, int block_size, int search_range, const unsigned char* left_gray, const unsigned char* right_gray, unsigned char* disparity) {
+// baseline
+__global__ void compute_disparity_v0(int width, int height, int patch_size, int search_range, const unsigned char* left_gray, const unsigned char* right_gray, unsigned char* disparity) {
 
 
 
@@ -35,7 +35,7 @@ __global__ void compute_disparity(int width, int height, int block_size, int sea
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
-		if (x >= block_size/2 && x < width - block_size/2 && y >= block_size/2 && y < height - block_size/2) {
+		if (x >= patch_size/2 && x < width - patch_size/2 && y >= patch_size/2 && y < height - patch_size/2) {
 
 			int min_disp_range = max(0, x - search_range);
     	int max_disp_range = min(width - 1, x + search_range);
@@ -43,8 +43,8 @@ __global__ void compute_disparity(int width, int height, int block_size, int sea
 		  for (int offset = min_disp_range - x; offset <= max_disp_range - x; offset++) {
 		      // Compute SAD between left and right block
 		      int sad = 0;
-		      for (int i = -block_size/2; i <= block_size/2; i++) {
-		          for (int j = -block_size/2; j <= block_size/2; j++) {
+		      for (int i = -patch_size/2; i <= patch_size/2; i++) {
+		          for (int j = -patch_size/2; j <= patch_size/2; j++) {
 
 				            int px1 = left_gray[(y + i) * width + (x + j)];
 				            int px2 = right_gray[(y + i) * width + (x + offset + j)];
@@ -61,57 +61,180 @@ __global__ void compute_disparity(int width, int height, int block_size, int sea
 		  }
 
 		  // Store best disparity
-		  disparity[(y * width) + x] = abs(best_offset); //* (255.0 / max_disparity);
+		  disparity[(y * width) + x] = abs(best_offset); 
 		}
 }
 
+// shared memory for left image
+__global__ void compute_disparity_v1(int width, int height, int patch_size, int search_range, const unsigned char* left_gray, const unsigned char* right_gray, unsigned char* disparity) {
 
-/*
-__global__ void compute_disparity_optimized(int width, int height, int block_size, int search_range, const unsigned char* left_gray, const unsigned char* right_gray, unsigned char* disparity) {
-    int tile_width = blockDim.x;
-    int tile_height = blockDim.y;
-    int tile_x = blockIdx.x * tile_width;
-    int tile_y = blockIdx.y * tile_height;
+    __shared__ unsigned char left_shared[64][64]; // padding shared memory enough to support getting SAD neighbors for the left image tiles  
 
-    int x_start = tile_x + threadIdx.x;
-    int y_start = tile_y + threadIdx.y;
+    int min_sad = INT_MAX;
+    int best_offset = 0;
 
-    for (int y = y_start; y < tile_y + tile_height && y < height; y += blockDim.y) {
+    // Compute the valid range of disparities for the current pixel
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
 
-        for (int x = x_start; x < tile_x + tile_width && x < width; x += blockDim.x) {
-            int min_disp_range = max(0, x - search_range);
-            int max_disp_range = min(width - 1, x + search_range);
+    // Load left image tile into shared memory
+    for (int i = -patch_size/2; i <= patch_size/2; i++) {
+        for (int j = -patch_size/2; j <= patch_size/2; j++) {
+					// Compute the clamped x and y values to ensure that the indices used to access left_gray
+					// are within the valid range of indices for the left image array
+            int clamped_x = min(max(0, x + j), width - 1);
+            int clamped_y = min(max(0, y + i), height - 1);
+            left_shared[threadIdx.y + i + patch_size/2][threadIdx.x + j + patch_size/2] = left_gray[y * width + x];
 
-            int min_sad = INT_MAX;
-            int best_offset = 0;
-
-            for (int offset = min_disp_range - x; offset <= max_disp_range - x; offset++) {
-                int sad = 0;
-
-                for (int i = 0; i < block_size; i++) {
-
-                    for (int j = 0; j < block_size; j++) {
-                        int px1 = left_gray[(y + i) * width + (x + j)];
-                        int px2 = right_gray[(y + i) * width + (x + offset + j)];
-                        sad += abs(px1 - px2);
-												
-                    }
-										if(sad >= min_sad) break;
-                }
-
-                if (sad < min_sad) {
-                    min_sad = sad;
-                    best_offset = offset;
-                }
-            }
-
-            disparity[y * width + x] = abs(best_offset);
         }
     }
-}*/
+
+    //__syncthreads();
+
+    if (x >= patch_size/2 && x < width - patch_size/2 && y >= patch_size/2 && y < height - patch_size/2) {
+        int min_disp_range = max(0, x - search_range);
+        int max_disp_range = min(width - 1, x + search_range);
+
+        // Iterate over all possible disparities
+        for (int offset = min_disp_range - x; offset <= max_disp_range - x; offset++) {
+            // Compute SAD between left and right block
+            int sad = 0;
+            for (int i = -patch_size/2; i <= patch_size/2; i++) {
+                for (int j = -patch_size/2; j <= patch_size/2; j++) {
+                    int px1 = left_shared[threadIdx.y + i + patch_size/2][threadIdx.x + j + patch_size/2];
+                    int px2 = right_gray[(y + i) * width + (x + offset + j)];
+                    sad += abs(px1 - px2);
+                }
+            }
+						// __syncthreads();
+            // Update best disparity if current SAD is lower
+            if (sad < min_sad) {
+                min_sad = sad;
+                best_offset = offset;
+            }
+        }
+
+        // Store best disparity
+        disparity[(y * width) + x] = abs(best_offset);
+    }
+}
 
 
-__global__ void compute_disparity_optimized(int width, int height, int block_size, int search_range, const unsigned char* left_gray, const unsigned char* right_gray, unsigned char* disparity) {
+// early termination
+__global__ void compute_disparity_v2(int width, int height, int patch_size, int search_range, const unsigned char* left_gray, const unsigned char* right_gray, unsigned char* disparity) {
+
+
+
+    int min_sad = INT_MAX;
+    int best_offset = 0;
+
+    // Compute the valid range of disparities for the current pixel
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+		if (x >= patch_size/2 && x < width - patch_size/2 && y >= patch_size/2 && y < height - patch_size/2) {
+
+			int min_disp_range = max(0, x - search_range);
+    	int max_disp_range = min(width - 1, x + search_range);
+      // Iterate over all possible disparities
+			int offset = min_disp_range - x; 	
+        exit: while(offset <= max_disp_range - x){
+		      // Compute SAD between left and right block
+		      int sad = 0;
+		      for (int i = -patch_size/2; i <= patch_size/2; i++) {
+		          for (int j = -patch_size/2; j <= patch_size/2; j++) {
+
+				            int px1 = left_gray[(y + i) * width + (x + j)];
+				            int px2 = right_gray[(y + i) * width + (x + offset + j)];
+				            sad += abs(px1 - px2);
+								
+		          }
+							if(sad >= min_sad){
+										offset++;
+										goto exit;
+								}
+		      }
+
+		      // Update best disparity if current SAD is lower
+		      if (sad < min_sad) {
+		          min_sad = sad;
+		          best_offset = offset;
+		      }
+					offset++;
+		  }
+
+		  // Store best disparity
+		  disparity[(y * width) + x] = abs(best_offset); 
+		}
+}
+
+// shared memory for left image + early termination
+
+__global__ void compute_disparity_v3(int width, int height, int patch_size, int search_range, const unsigned char* left_gray, const unsigned char* right_gray, unsigned char* disparity) {
+
+    __shared__ unsigned char left_shared[64][64]; // padding shared memory enough to support getting SAD neighbors for the left image tiles  
+
+    int min_sad = INT_MAX;
+    int best_offset = 0;
+
+    // Compute the valid range of disparities for the current pixel
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    // Load left image tile into shared memory
+    for (int i = -patch_size/2; i <= patch_size/2; i++) {
+        for (int j = -patch_size/2; j <= patch_size/2; j++) {
+					// Compute the clamped x and y values to ensure that the indices used to access left_gray
+					// are within the valid range of indices for the left image array
+            int clamped_x = min(max(0, x + j), width - 1);
+            int clamped_y = min(max(0, y + i), height - 1);
+            left_shared[threadIdx.y + i + patch_size/2][threadIdx.x + j + patch_size/2] = left_gray[clamped_y * width + clamped_x];
+
+        }
+    }
+
+    __syncthreads();
+
+    if (x >= patch_size/2 && x < width - patch_size/2 && y >= patch_size/2 && y < height - patch_size/2) {
+        int min_disp_range = max(0, x - search_range);
+        int max_disp_range = min(width - 1, x + search_range);
+
+        // Iterate over all possible disparities
+				int offset = min_disp_range - x; 	
+        exit: while(offset <= max_disp_range - x){
+            // Compute SAD between left and right block
+            int sad = 0;
+            for (int i = -patch_size/2; i <= patch_size/2; i++) {
+                for (int j = -patch_size/2; j <= patch_size/2; j++) {
+                    int px1 = left_shared[threadIdx.y + i + patch_size/2][threadIdx.x + j + patch_size/2];
+                    int px2 = right_gray[(y + i) * width + (x + offset + j)];
+                    sad += abs(px1 - px2);
+                }
+								if(sad >= min_sad){
+											offset++;
+											goto exit;
+									}
+
+            }
+						//__syncthreads();
+						
+            // Update best disparity if current SAD is lower
+            if (sad < min_sad) {
+                min_sad = sad;
+                best_offset = offset;
+            }
+						offset++;
+        }
+
+        // Store best disparity
+        disparity[(y * width) + x] = abs(best_offset);
+    }
+}
+
+
+// tiled based workload mapping (will not be included in the presentation/report --> hard to explain)
+
+__global__ void compute_disparity_v4(int width, int height, int patch_size, int search_range, const unsigned char* left_gray, const unsigned char* right_gray, unsigned char* disparity) {
     int tile_width = blockDim.x;
     int tile_height = blockDim.y;
     int tile_x = blockIdx.x * tile_width;
@@ -120,8 +243,8 @@ __global__ void compute_disparity_optimized(int width, int height, int block_siz
     int x_start = tile_x + threadIdx.x;
     int y_start = tile_y + threadIdx.y;
 
-    for (int y = y_start; y < tile_y + tile_height && y < height - block_size/2 && y >=block_size/2; y += blockDim.y) {
-        for (int x = x_start; x < tile_x + tile_width && x < width - block_size/2 && x >=block_size/2; x += blockDim.x) {
+    for (int y = y_start; y < tile_y + tile_height && y < height - patch_size/2 && y >=patch_size/2; y += blockDim.y) {
+        for (int x = x_start; x < tile_x + tile_width && x < width - patch_size/2 && x >=patch_size/2; x += blockDim.x) {
 
             int min_disp_range = max(0, x - search_range);
             int max_disp_range = min(width - 1, x + search_range);
@@ -131,8 +254,8 @@ __global__ void compute_disparity_optimized(int width, int height, int block_siz
 						int offset = min_disp_range - x; 	
             exit: while(offset <= max_disp_range - x){
                 int sad = 0;
-                for (int i = -block_size/2; i <= block_size/2; i++) {
-                    for (int j = -block_size/2; j <= block_size/2; j++) {
+                for (int i = -patch_size/2; i <= patch_size/2; i++) {
+                    for (int j = -patch_size/2; j <= patch_size/2; j++) {
                         int px1 = left_gray[(y + i) * width + (x + j)];
                         int px2 = right_gray[(y + i) * width + (x + offset + j)];
                         sad += abs(px1 - px2);
@@ -155,6 +278,7 @@ __global__ void compute_disparity_optimized(int width, int height, int block_siz
         }
     }
 }
+
 
 
 
@@ -188,24 +312,37 @@ void normalize_image(unsigned char* img, int img_width, int img_height)
 int main(int argc, char** argv)
 {
 		// Check command line arguments
-		if (argc != 5) {
-				cerr << "Usage: " << argv[0] << " <gpu_block_size> <cost block size> <search range> <image directory>" << endl;
+		if (argc != 6) {
+				cerr << "Usage: " << argv[0] << "<kernel_version> <gpu_patch_size> <cost block size> <search range> <image directory>" << endl;
 				return 1;
 		}
 
 
     // Parse block size and search range from command line arguments
-		int gpu_block_dim = atoi(argv[1]);
-    int block_size = atoi(argv[2]);
-    int search_range = atoi(argv[3]);
- 		string image_dir = argv[4];
+		int kernel_version = atoi(argv[1]);
+		int gpu_block_dim = atoi(argv[2]);
+    int patch_size = atoi(argv[3]);
+    int search_range = atoi(argv[4]);
+ 		string image_dir = argv[5];
    	string left_path = image_dir + "/view5.png";
    	string right_path = image_dir + "/view1.png";
+		typedef void (*kernel_function_t)(int, int, int, int, const unsigned char*, const unsigned char*, unsigned char*);
+
+		kernel_function_t kernel_functions[] = {
+				compute_disparity_v0, // baseline
+				compute_disparity_v1, // shared memory only
+				compute_disparity_v2, // early termination only
+				compute_disparity_v3, // shared memory + early termination
+				compute_disparity_v4
+		};
+
+		kernel_function_t kernel_function = kernel_functions[kernel_version];
     // Check that block size and search range are valid
-    if (block_size <= 0 || block_size % 2 == 0 || search_range <= 0) {
+    if (patch_size <= 0 || patch_size % 2 == 0 || search_range <= 0) {
         cerr << "Error: invalid block size or search range" << endl;
         return 1;
     }
+
 
     // Read input images
     int left_width, left_height, left_channels;
@@ -252,6 +389,7 @@ int main(int argc, char** argv)
 				return 1;
 		}
 
+
 		// Allocate memory for output disparity map
 		int disp_width = left_width;
 		int disp_height = left_height;
@@ -273,14 +411,13 @@ int main(int argc, char** argv)
 		dim3 grid(ceil(disp_width + gpu_block_dim - 1) / gpu_block_dim, ceil(disp_height + gpu_block_dim - 1) / gpu_block_dim, 1);
 
 		float elapsed_time = 0.0f;
-		for (int i = 0; i < 5; i++) {
+		for (int i = 0; i < 10; i++) {
 				cudaEvent_t start, stop;
 				cudaEventCreate(&start);
 				cudaEventCreate(&stop);
 				cudaEventRecord(start);
 
-				//compute_disparity<<<grid, block>>>(disp_width, disp_height, block_size, search_range, d_left_gray, d_right_gray, d_disparity);
-				compute_disparity_optimized<<<grid, block>>>(disp_width, disp_height, block_size, search_range, d_left_gray, d_right_gray, d_disparity);
+				kernel_function<<<grid, block>>>(disp_width, disp_height, patch_size, search_range, d_left_gray, d_right_gray, d_disparity);
 				cudaEventRecord(stop);
 				cudaEventSynchronize(stop);
 
@@ -293,7 +430,7 @@ int main(int argc, char** argv)
     // Write the input configurations and elapsed time to CSV file
     ofstream outfile;
     outfile.open("results.csv", ios_base::app); // open the file in append mode
-    outfile << gpu_block_dim << "," << block_size << "," << search_range << "," << image_dir << "," << avg_time << endl;
+    outfile << image_dir << "," << kernel_version << "," << gpu_block_dim << "," << patch_size << "," << search_range << "," << avg_time << endl;
     outfile.close();
     
     cout << "Average disparity estimation kernel execution time: " << avg_time << "ms" << endl;
@@ -310,7 +447,7 @@ int main(int argc, char** argv)
 
 
 
-		output_path = output_dir + "/disparity_gpu_" + to_string(block_size) + "_" + to_string(search_range)  + "_.png";
+		output_path = output_dir + "/disparity_gpu_" + to_string(patch_size) + "_" + to_string(search_range)  + "_.png";
 
 		// Write output disparity map to file
 		stbi_write_png(output_path.c_str(), disp_width, disp_height, 1, disparity, disp_width);

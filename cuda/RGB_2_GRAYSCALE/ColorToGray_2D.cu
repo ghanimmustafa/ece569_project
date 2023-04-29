@@ -30,8 +30,8 @@ int main(int argc, char *argv[]) {
     int imgwidth;
     int imgdepth;
     
-    const char *right_image_path = "im1.png";
-    const char *right_output_image= "lefttoutput.png";
+    const char *right_image_path = argv[1];
+    const char *right_output_image= "output2D.png";
     unsigned char *h_right_input_image = stbi_load(right_image_path, &imgwidth, &imgheight, &imgdepth, 3);
     unsigned char *h_right_output_image;
     unsigned char *d_right_input_image;
@@ -66,7 +66,7 @@ int main(int argc, char *argv[]) {
     cudaEventSynchronize(stop_time);
     cudaEventElapsedTime(&execution_time, start_time, stop_time);
     execution_time /=10.0f;
-    printf("Total execution time for Color To Grayscale conversion: (ms) %f\n",execution_time);
+    printf("Average execution time 2D: \t\t%f\n",execution_time);
 
     //coping output data from Device to Host for the right image
     cudaMemcpy(h_right_output_image, d_right_output_image, imgwidth * imgheight, cudaMemcpyDeviceToHost);

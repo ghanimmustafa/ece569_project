@@ -3,9 +3,11 @@
 #include "stb_image.h"
 #include "stb_image_write.h"
 #include <cuda_runtime.h>
- 
+
+__constant__ float factors[16 * 16 * 16];
+
   //3D thread block organization for the image
-__global__ void rgb_to_gry_img(unsigned char *r, unsigned char *g, unsigned char *b, int width, int height, int depth, unsigned char *gry){
+__global__ void rgb_to_gry_img(unsigned char *r, unsigned char *g, unsigned char *b, int width, int height, int depth, int lut_dim, unsigned char *gry){
   
      int d=blockIdx.x*blockDim.x+threadIdx.x;    
      int w=blockIdx.y*blockDim.y+threadIdx.y;
@@ -18,7 +20,7 @@ __global__ void rgb_to_gry_img(unsigned char *r, unsigned char *g, unsigned char
        	unsigned char green=g[index];      //getting the pixel for green
       	unsigned char blue=b[index];  //getting the pixel for blue
    
-      	gry[index]= 0.21*red + 0.71*green + 0.07*blue;     
+      	gry[index]= (unsigned char)factors[((red * lut_dim + blue) * lut_dim) + green];     
    }
 }
 
@@ -37,6 +39,22 @@ __host__ void transpose(unsigned char *in, unsigned char *out, int width, int he
 
 int main(int argc, char *argv[]) {
 
+	int lut_dim = 16;
+	float *h_lut_ar = (float*) malloc(lut_dim * lut_dim * lut_dim * sizeof(float));
+    int r,g,b;
+    float gray;
+    
+    for(r=0;r<256;r+=16){
+       	for(g=0;g<256;g+=16){
+           	for(b=0;b<256;b+=16){
+            	gray = 0.21*r + 0.71*g + 0.07*b;			     	
+				//printf("%d %d %d %f\n", r, g, b, gray);				
+				h_lut_ar[(((r / lut_dim) * lut_dim) + (g / lut_dim)) * lut_dim + (b / lut_dim)] = gray;   		
+			}
+   		}
+  	}
+	
+
 	float execution_time;
     cudaEvent_t start_time, stop_time;
     cudaEventCreate(&start_time);
@@ -48,7 +66,7 @@ int main(int argc, char *argv[]) {
     int imgdepth;
 
     const char *right_image_path = argv[1];
-    const char *right_output_image = "output_3D.png";
+    const char *right_output_image = "output_3D_lut.png";
     unsigned char *h_image = stbi_load(right_image_path, &imgwidth, &imgheight, &imgdepth, 3);
 	unsigned char *h_gray=(unsigned char*)malloc(imgwidth * imgheight * sizeof(unsigned char));
     //split image into separate channels 
@@ -63,9 +81,9 @@ int main(int argc, char *argv[]) {
 	for(int i=0;i<imgdepth;i++){
 		for(int j=0; j<imgheight;j++){
 		   for(int k=0;k<imgwidth;k++) {
-               h_r[j * imgwidth + k] = transposed[(i * imgdepth + j) * imgwidth + k];
-               h_g[j * imgwidth + k] = transposed[(i * imgdepth + j) * imgwidth + k + 1];
-               h_b[j * imgwidth + k] = transposed[(i * imgdepth + j) * imgwidth + k + 2];
+               h_r[j * imgwidth + k] = transposed[(i * imgdepth + j) * imgwidth + k] / lut_dim;
+               h_g[j * imgwidth + k] = transposed[(i * imgdepth + j) * imgwidth + k + 1] / lut_dim;
+               h_b[j * imgwidth + k] = transposed[(i * imgdepth + j) * imgwidth + k + 2] / lut_dim;
       	   }
         }
     }
@@ -86,20 +104,21 @@ int main(int argc, char *argv[]) {
 	cudaMemcpy(d_r, h_r, (imgwidth * imgheight) * sizeof(unsigned char), cudaMemcpyHostToDevice);
     cudaMemcpy(d_g, h_g, (imgwidth * imgheight) * sizeof(unsigned char), cudaMemcpyHostToDevice);
     cudaMemcpy(d_b, h_b, (imgwidth * imgheight) * sizeof(unsigned char), cudaMemcpyHostToDevice);
+	cudaMemcpyToSymbol(factors, h_lut_ar, lut_dim*lut_dim*lut_dim*sizeof(float));
 
 	const dim3 blocksize(3,16,16); //declaring the number of threads
     const dim3 gridsize((imgdepth-1)/3+1, (imgwidth-1)/16+1,(imgheight-1)/16+1); //declaring the number of blocks
 
 	for (int j=0; j<10 ; j++){
 	cudaEventRecord(start_time, 0);
-    	rgb_to_gry_img<<<gridsize,blocksize>>>(d_r, d_g, d_b, imgwidth, imgheight, imgdepth, d_out);
+    	rgb_to_gry_img<<<gridsize,blocksize>>>(d_r, d_g, d_b, imgwidth, imgheight, imgdepth, lut_dim, d_out);
 	}
     cudaDeviceSynchronize();
     cudaEventRecord(stop_time, 0);
     cudaEventSynchronize(stop_time);
     cudaEventElapsedTime(&execution_time, start_time, stop_time);
     execution_time /=10.0f;
-    printf("Average execution time for 3D: \t\t%f\n",execution_time);
+    printf("Average execution time for LUT (3D): \t%f\n",execution_time);
   
     cudaMemcpy(h_gray, d_out, imgwidth * imgheight, cudaMemcpyDeviceToHost);
 
